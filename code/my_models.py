@@ -42,16 +42,25 @@ class Attention(nn.Module):
     def __init__(self, dim, heads = 8, dim_head = 64, dropout = 0.):
         super().__init__()
         # set heads and scale (=sqrt(dim_head))
-        # TODO
+        self.heads = heads
+        self.scale = dim_head ** -0.5
+        inner_dim = dim_head * heads
+        
         # we need softmax layer and dropout
-        # TODO
+        self.softmax = nn.Softmax(dim = -1)
+        self.attn_dropout = nn.Dropout(dropout)
         # as well as the q linear layer
-        # TODO
+        self.query_repr = nn.Linear(dim, inner_dim, bias = False)
+
         # and the k/v linear layer (can be realized as one single linear layer
         # or as two individual ones)
-        # TODO
+        self.key_repr = nn.Linear(dim, inner_dim, bias = False)
+        self.value_repr = nn.Linear(dim, inner_dim, bias = False)
         # and the output linear layer followed by dropout
-        # TODO
+        self.out_repr = nn.Sequential(
+            nn.Linear(inner_dim, dim),
+            nn.Dropout(dropout)
+        )
 
     def forward(self, x, context = None, kv_include_self = False):
         # now compute the attention/cross-attention
@@ -67,9 +76,27 @@ class Attention(nn.Module):
             # cross attention requires CLS token includes itself as key / value
             context = torch.cat((x, context), dim = 1) 
         
-        # TODO: attention 
+        # Linear projections to obtain Q, K, and V from input/context
+        q = self.query_repr(x)
+        k = self.key_repr(context)
+        v = self.value_repr(context)
+
+        q = rearrange(q, 'b n (h d) -> b h n d', h = h)
+        k = rearrange(k, 'b n (h d) -> b h n d', h = h)
+        v = rearrange(v, 'b n (h d) -> b h n d', h = h)
+
+        # Compute scaled dot-product attention: (Q × Kᵀ) / √d
+        attn = einsum('b h i d, b h j d -> b h i j', q, k) * self.scale
+        attn = self.softmax(attn)
+        # Dropout for regularizing attention weights
+        attn = self.attn_dropout(attn)
+        # Weighted sum of values: Attention weights × V
+        out = einsum('b h i j, b h j d -> b h i d', attn, v)
+        out = rearrange(out, 'b h n d -> b n (h d)')
+        out = self.out_repr(out)
 
         return out 
+
 
 
 # ViT & CrossViT

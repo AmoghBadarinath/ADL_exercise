@@ -4,15 +4,31 @@ from torch import nn
 from torchvision import datasets, transforms, models
 from torch.utils.data import DataLoader
 from torch import optim
+import os
+from my_models import ViT, CrossViT   
+from pathlib import Path
 
-from my_models import ViT, CrossViT   # rename the skeleton file for your implementation / comment before testing for ResNet
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR / "data" / "cifar10"
+CKPT_DIR = BASE_DIR / "checkpoints"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+CKPT_DIR.mkdir(parents=True, exist_ok=True)
 
+def early_stopping(val_acc, best_acc, patience_counter, patience):
+    if val_acc > best_acc:
+        best_acc = val_acc
+        patience_counter = 0
+    else:
+        patience_counter += 1
+
+    stop_training = patience_counter >= patience     
+    return stop_training, best_acc, patience_counter
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train a neural network to classify CIFAR10')
     parser.add_argument('--model', type=str, default='r18', help='model to train (default: r18)')
     parser.add_argument('--batch-size', type=int, default=64, help='input batch size for training (default: 64)')
-    parser.add_argument('--epochs', type=int, default=5, help='number of epochs to train (default: 5)')
+    parser.add_argument('--epochs', type=int, default=50, help='number of epochs to train (default: 5)')
     parser.add_argument('--lr', type=float, default=0.003, help='learning rate (default: 0.003)')
     parser.add_argument('--momentum', type=float, default=0.9, help='SGD momentum (default: 0.9)')
     parser.add_argument('--no-cuda', action='store_true', default=False, help='disables CUDA training')
@@ -56,29 +72,40 @@ def test(model, device, test_loader, criterion, set="Test"):
         set, test_loss, correct, len(test_loader.dataset),
         100. * correct / len(test_loader.dataset)))
 
+    val_acc = correct / len(test_loader.dataset)
+    return val_acc
 
 def run(args):
+
     # Download and load the training data
-    transform = transforms.Compose([transforms.ToTensor(),
+    train_transform = transforms.Compose([
+                                    # transforms.RandomCrop(32, padding=4),
+                                    # transforms.RandomHorizontalFlip(), 
+                                    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+                                    transforms.ToTensor(),
                                     # ImageNet mean/std values should also fit okayish for CIFAR
-									transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225) ) 
+                                     transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225) ) 
                                     ])
 
-    # TODO: adjust folder
-    dataset = datasets.CIFAR10('G:\FAU\ADL_exercise\CIFAR10', download=True, train=True, transform=transform)
+    test_transform = transforms.Compose([transforms.ToTensor(),
+                                      # ImageNet mean/std values should also fit okayish for CIFAR
+                                      transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225) ) 
+                                      ])
+
+    dataset = datasets.CIFAR10(DATA_DIR, download=True, train=True, transform=train_transform)
     trainset, valset = torch.utils.data.random_split(dataset, [int(len(dataset)*0.9), len(dataset)-int(len(dataset)*0.9)])
     trainloader = DataLoader(trainset, batch_size=64, shuffle=True)
     valloader = DataLoader(valset, batch_size=64, shuffle=False)
 
     # Download and load the test data
-    # TODO: adjust folder
-    testset = datasets.CIFAR10('G:\FAU\ADL_exercise\CIFAR10', download=True, train=False, transform=transform)
-    testloader = DataLoader(testset, batch_size=64, shuffle=True)
+    testset = datasets.CIFAR10(DATA_DIR, download=True, train=False, transform=test_transform)
+    testloader = DataLoader(testset, batch_size=64, shuffle=False)
 
     # Build a feed-forward network
     print(f"Using {args.model}")
     if args.model == "r18":
         model = models.resnet18(pretrained=False)
+        model.fc = nn.Linear(model.fc.in_features, 10)
     elif args.model == "vit":
         model = ViT(image_size = 32, patch_size = 8, num_classes = 10, dim = 64,
                     depth = 2, heads = 8, mlp_dim = 128, dropout = 0.1,
@@ -103,10 +130,31 @@ def run(args):
     model.to(device)
     optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
 
+    best_val_acc = 0.0
+    patience = 5
+    patience_counter = 0
+    best_path = CKPT_DIR / "best_model.pth"
+    os.makedirs("checkpoints", exist_ok=True)
+
     for epoch in range(1, args.epochs + 1):
         train(model, trainloader, optimizer, criterion, device, epoch)
-        test(model, device, valloader, criterion, set="Validation")
+        val_acc = test(model, device, valloader, criterion, set="Validation")
 
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            if args.save_model:
+                torch.save(model.state_dict(), best_path)
+                print(f"New best model saved with validation accuracy: {best_val_acc*100:.2f}%")
+
+        stop_training, best_val_acc, patience_counter = early_stopping(val_acc, best_val_acc, patience_counter, patience)
+        if stop_training:
+            print("Early stopping triggered at epoch {}".format(epoch))
+            break
+
+    if args.save_model:
+        # Load the best model for testing
+        model.load_state_dict(torch.load(best_path))
+        print("Loaded best model for testing.")
     test(model, device, testloader, criterion)
 
 if __name__ == '__main__':

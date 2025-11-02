@@ -138,13 +138,22 @@ class ProjectInOut(nn.Module):
     def forward(self, x, *args, **kwargs):
         """
         Args:
+            x: Input tensor
             *args, **kwargs: to be passed on to fn
 
         Notes:
             - after calling fn, the tensor has to be projected back into it's original shape   
             - fn(W_in) * W_out
         """
-        # TODO
+        # Project input to inner dimension
+        x = self.project_in(x)
+        
+        # Apply the function
+        x = self.fn(x, *args, **kwargs)
+        
+        # Project back to outer dimension
+        x = self.project_out(x)
+        
         return x
 
 # CrossViT
@@ -154,19 +163,39 @@ class CrossTransformer(nn.Module):
     def __init__(self, sm_dim, lg_dim, depth, heads, dim_head, dropout):
         super().__init__()
         self.layers = nn.ModuleList([])
-        # TODO: create # depth encoders using ProjectInOut
-        # Note: no positional FFN here 
+        
+        # Create depth number of cross attention layers
+        for _ in range(depth):
+            self.layers.append(nn.ModuleList([
+                # Small tokens attending to large patches
+                ProjectInOut(
+                    dim_outer=sm_dim,
+                    dim_inner=lg_dim,
+                    fn=PreNorm(lg_dim, Attention(lg_dim, heads=heads, dim_head=dim_head, dropout=dropout))
+                ),
+                # Large tokens attending to small patches
+                ProjectInOut(
+                    dim_outer=lg_dim,
+                    dim_inner=sm_dim,
+                    fn=PreNorm(sm_dim, Attention(sm_dim, heads=heads, dim_head=dim_head, dropout=dropout))
+                )
+            ]))
 
     def forward(self, sm_tokens, lg_tokens):
+        # Split CLS tokens and patch tokens
         (sm_cls, sm_patch_tokens), (lg_cls, lg_patch_tokens) = map(lambda t: (t[:, :1], t[:, 1:]), (sm_tokens, lg_tokens))
 
-        # Forward pass through the layers, 
-        # cross attend to 
-        # 1. small cls token to large patches and
-        # 2. large cls token to small patches
-        # TODO
-        # finally concat sm/lg cls tokens with patch tokens 
-        # TODO
+        # Forward pass through cross attention layers
+        for sm_to_lg, lg_to_sm in self.layers:
+            # Small CLS token attending to large patches
+            sm_cls = sm_to_lg(sm_cls, context=lg_patch_tokens, kv_include_self=False) + sm_cls
+            # Large CLS token attending to small patches
+            lg_cls = lg_to_sm(lg_cls, context=sm_patch_tokens, kv_include_self=False) + lg_cls
+
+        # Concatenate CLS tokens back with patch tokens
+        sm_tokens = torch.cat((sm_cls, sm_patch_tokens), dim=1)
+        lg_tokens = torch.cat((lg_cls, lg_patch_tokens), dim=1)
+
         return sm_tokens, lg_tokens
 
 # CrossViT
@@ -187,14 +216,37 @@ class MultiScaleEncoder(nn.Module):
     ):
         super().__init__()
         self.layers = nn.ModuleList([])
+        
+        # Create multiple encoder layers
         for _ in range(depth):
             self.layers.append(nn.ModuleList([
-                # 2 transformer branches, one for small, one for large patchs
-                # + 1 cross transformer block
+                # Small patch transformer
+                Transformer(dim=sm_dim, **sm_enc_params),
+                
+                # Large patch transformer
+                Transformer(dim=lg_dim, **lg_enc_params),
+                
+                # Cross attention between small and large patches
+                CrossTransformer(
+                    sm_dim=sm_dim,
+                    lg_dim=lg_dim,
+                    depth=cross_attn_depth,
+                    heads=cross_attn_heads,
+                    dim_head=cross_attn_dim_head,
+                    dropout=dropout
+                )
             ]))
 
     def forward(self, sm_tokens, lg_tokens):
-        # forward through the transformer encoders and cross attention block
+        # Forward through each layer
+        for sm_enc, lg_enc, cross_attend in self.layers:
+            # Process tokens through their respective transformers
+            sm_tokens = sm_enc(sm_tokens)
+            lg_tokens = lg_enc(lg_tokens)
+            
+            # Cross attention between small and large representations
+            sm_tokens, lg_tokens = cross_attend(sm_tokens, lg_tokens)
+
         return sm_tokens, lg_tokens
 
 # CrossViT (could actually also be used in ViT)
@@ -214,22 +266,37 @@ class ImageEmbedder(nn.Module):
         num_patches = (image_size // patch_size) ** 2
         patch_dim = 3 * patch_size ** 2
 
-        # create layer that re-arranges the image patches
+        # Create layer that re-arranges the image patches
         # and embeds them with layer norm + linear projection + layer norm
         self.to_patch_embedding = nn.Sequential(
-        # TODO 
+            Rearrange('b c (h p1) (w p2) -> b (h w) (p1 p2 c)', p1=patch_size, p2=patch_size),
+            nn.LayerNorm(patch_dim),
+            nn.Linear(patch_dim, dim),
+            nn.LayerNorm(dim),
         )
-        # create/initialize #dim-dimensional positional embedding (will be learned)
-        # TODO
-        # create #dim cls tokens (for each patch embedding)
-        # TODO
-        # create dropput layer
+
+        # Create/initialize positional embedding (will be learned)
+        self.pos_embedding = nn.Parameter(torch.randn(1, num_patches + 1, dim))
+        
+        # Create cls token (for each patch embedding)
+        self.cls_token = nn.Parameter(torch.randn(1, 1, dim))
+        
+        # Create dropout layer
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, img):
-        # forward through patch embedding layer
-        # concat class tokens
-        # and add positional embedding
+        # Forward through patch embedding layer
+        x = self.to_patch_embedding(img)
+        b, n, _ = x.shape
+
+        # Concat class tokens
+        cls_tokens = repeat(self.cls_token, '1 1 d -> b 1 d', b=b)
+        x = torch.cat((cls_tokens, x), dim=1)
+
+        # Add positional embedding
+        x += self.pos_embedding[:, :(n + 1)]
+
+        # Apply dropout and return
         return self.dropout(x)
 
 

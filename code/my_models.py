@@ -88,6 +88,8 @@ class Attention(nn.Module):
         # Compute scaled dot-product attention: (Q × Kᵀ) / √d
         attn = einsum('b h i d, b h j d -> b h i j', q, k) * self.scale
         attn = self.softmax(attn)
+        # Save attention weights
+        self.attn_weights = attn
         # Dropout for regularizing attention weights
         attn = self.attn_dropout(attn)
         # Weighted sum of values: Attention weights × V
@@ -362,6 +364,25 @@ class ViT(nn.Module):
         # to the mlp head
         x = self.to_latent(x)
         return self.mlp_head(x)
+    
+    def get_last_attention_weights(self):
+        """
+        Retrieves the attention weights from the last self-attention block
+        of the final Transformer layer.
+        """
+        # Access the last layer in the transformer stack
+        last_transformer_layer = self.transformer.layers[-1]
+        
+        # The first element of the layer is the PreNorm(Attention) module
+        pre_norm_attn = last_transformer_layer[0].fn
+        
+        # The attention weights are stored in the Attention module itself
+        weights = pre_norm_attn.attn_weights
+        
+        # Clear the weights to prevent leakage or accidental use later
+        pre_norm_attn.attn_weights = None 
+        
+        return weights # Shape: (B, H, N_tokens, N_tokens)
 
 
 # CrossViT
@@ -392,7 +413,18 @@ class CrossViT(nn.Module):
     ):
         super().__init__()
         # create ImageEmbedder for small and large patches
-        # TODO
+        self.sm_embedder = ImageEmbedder(
+            dim=sm_dim,
+            image_size=image_size,
+            patch_size=sm_patch_size,
+            dropout=emb_dropout
+        )
+        self.lg_embedder = ImageEmbedder(
+            dim=lg_dim,
+            image_size=image_size,
+            patch_size=lg_patch_size,
+            dropout=emb_dropout
+        )
 
         # create MultiScaleEncoder
         self.multi_scale_encoder = MultiScaleEncoder(
@@ -423,13 +455,17 @@ class CrossViT(nn.Module):
 
     def forward(self, img):
         # apply image embedders
-        # TODO
+        sm_tokens = self.sm_embedder(img)
+        lg_tokens = self.lg_embedder(img)
 
         # and the multi-scale encoder
-        # TODO
+        sm_tokens, lg_tokens = self.multi_scale_encoder(sm_tokens, lg_tokens)
 
         # call the mlp heads w. the class tokens 
-        # TODO
+        sm_cls_token = sm_tokens[:, 0]
+        lg_cls_token = lg_tokens[:, 0]
+        sm_logits = self.sm_mlp_head(sm_cls_token)
+        lg_logits = self.lg_mlp_head(lg_cls_token)
         
         return sm_logits + lg_logits
 

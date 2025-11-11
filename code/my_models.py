@@ -470,6 +470,35 @@ class CrossViT(nn.Module):
         return sm_logits + lg_logits
 
 
+    def get_last_attention_weights(self):
+        """
+        Retrieves the attention weights from the last self-attention block 
+        of the final SMALL-PATCH Transformer layer within the MultiScaleEncoder.
+        """
+        # 1. Access the last layer in the MultiScaleEncoder stack
+        last_ms_layer = self.multi_scale_encoder.layers[-1]
+        
+        # 2. The first element is the small patch Transformer (sm_enc)
+        sm_transformer = last_ms_layer[0] 
+        
+        # 3. Access the last layer in the small patch Transformer stack
+        last_sm_enc_layer = sm_transformer.layers[-1]
+        
+        # 4. The first element of that layer is the PreNorm(Attention) module
+        pre_norm_attn = last_sm_enc_layer[0].fn
+        
+        # 5. The Attention weights are stored in the Attention module itself
+        weights = pre_norm_attn.attn_weights
+        
+        # Clear the weights to prevent leakage or accidental use later
+        # NOTE: This must be done on the Attention instance which is PreNorm(Attention).fn
+        pre_norm_attn.attn_weights = None 
+        
+        if weights is None:
+            raise AttributeError("Attention weights were not computed or saved during the last forward pass.")
+            
+        return weights # Shape: (B, H, N_tokens, N_tokens)
+
 if __name__ == "__main__":
     x = torch.randn(16, 3, 32, 32)
     vit = ViT(image_size = 32, patch_size = 8, num_classes = 10, dim = 64, depth = 2, heads = 8, mlp_dim = 128, dropout = 0.1, emb_dropout = 0.1)

@@ -4,6 +4,7 @@ from torch import nn
 from torchvision import datasets, transforms, models
 from torch.utils.data import DataLoader
 from torch import optim
+from torch.optim.lr_scheduler import CosineAnnealingLR
 import os
 from my_models import ViT, CrossViT   
 from pathlib import Path
@@ -29,8 +30,9 @@ def parse_args():
     parser.add_argument('--model', type=str, default='r18', help='model to train (default: r18)')
     parser.add_argument('--batch-size', type=int, default=64, help='input batch size for training (default: 64)')
     parser.add_argument('--epochs', type=int, default=50, help='number of epochs to train (default: 5)')
-    parser.add_argument('--lr', type=float, default=0.003, help='learning rate (default: 0.003)')
-    parser.add_argument('--momentum', type=float, default=0.9, help='SGD momentum (default: 0.9)')
+    parser.add_argument('--lr', type=float, default=0.001, help='learning rate (default: 0.003)')
+    parser.add_argument('--weight-decay', type=float, default=1e-2, help='AdamW weight decay (default: 1e-2)')
+    # parser.add_argument('--momentum', type=float, default=0.9, help='SGD momentum (default: 0.9)')
     parser.add_argument('--no-cuda', action='store_true', default=False, help='disables CUDA training')
     parser.add_argument('--seed', type=int, default=1, help='random seed (default: 1)')
     parser.add_argument('--log-interval', type=int, default=10, help='how many batches to wait before logging training status')
@@ -44,7 +46,7 @@ def train(model, trainloader, optimizer, criterion, device, epoch):
         data, target = data.to(device), target.to(device)
         optimizer.zero_grad()
         output = model(data)
-        loss = criterion(output, target)/len(output)
+        loss = criterion(output, target)
         loss.backward()
         optimizer.step()
         if batch_idx % args.log_interval == 0:
@@ -66,7 +68,7 @@ def test(model, device, test_loader, criterion, set="Test"):
             pred = output.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
             correct += pred.eq(target.view_as(pred)).sum().item()
 
-    test_loss /= len(test_loader.dataset)
+    test_loss /= len(test_loader)
 
     print('\n{} set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
         set, test_loss, correct, len(test_loader.dataset),
@@ -79,8 +81,8 @@ def run(args):
 
     # Download and load the training data
     train_transform = transforms.Compose([
-                                    # transforms.RandomCrop(32, padding=4),
-                                    # transforms.RandomHorizontalFlip(), 
+                                    transforms.RandomCrop(32, padding=4),
+                                    transforms.RandomHorizontalFlip(), 
                                     transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
                                     transforms.ToTensor(),
                                     # ImageNet mean/std values should also fit okayish for CIFAR
@@ -122,16 +124,18 @@ def run(args):
                          emb_dropout = 0.1)
 
     # Define the loss
-    criterion = nn.CrossEntropyLoss(reduction="sum")
+    criterion = nn.CrossEntropyLoss()
     if torch.cuda.is_available():
         device = torch.device("cuda")
     else:
         device = torch.device("cpu")
     model.to(device)
-    optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
+    # Use AdamW optimizer and a CosineAnnealingLR scheduler
+    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs)
 
     best_val_acc = 0.0
-    patience = 5
+    patience = 50
     patience_counter = 0
     best_path = CKPT_DIR / "best_model.pth"
     os.makedirs("checkpoints", exist_ok=True)
@@ -140,6 +144,9 @@ def run(args):
         train(model, trainloader, optimizer, criterion, device, epoch)
         val_acc = test(model, device, valloader, criterion, set="Validation")
 
+        # Step the scheduler every epoch
+        scheduler.step()
+
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             if args.save_model:
@@ -147,8 +154,11 @@ def run(args):
                 print(f"New best model saved with validation accuracy: {best_val_acc*100:.2f}%")
 
         stop_training, best_val_acc, patience_counter = early_stopping(val_acc, best_val_acc, patience_counter, patience)
+
         if stop_training:
+
             print("Early stopping triggered at epoch {}".format(epoch))
+
             break
 
     if args.save_model:

@@ -81,13 +81,13 @@ def load_data(args):
     valloader = DataLoader(torch.utils.data.Subset(testset, val_indices), batch_size=args.batch_size, shuffle=False, num_workers=2)
     testloader = DataLoader(torch.utils.data.Subset(testset, test_indices), batch_size=args.batch_size, shuffle=False, num_workers=2)
 
-    trainloader = DataLoader(trainset, batch_size=args.batch-size, shuffle=True, num_workers=2)
+    trainloader = DataLoader(trainset, batch_size=args.batch_size, shuffle=True, num_workers=2)
 
     return trainloader, valloader, testloader
 
 def get_model(args, device):
     if args.model == 'r18':
-        model = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
+        model = models.resnet18(weights=None)
         num_ftrs = model.fc.in_features
         model.fc = nn.Linear(num_ftrs, 10) 
     elif args.model == 'vit':
@@ -100,8 +100,8 @@ def get_model(args, device):
             depth = 4,      
             heads = 4,      
             mlp_dim = 256,   
-            dropout = 0.4,          
-            emb_dropout = 0.4
+            dropout = 0.2,          
+            emb_dropout = 0.2
         )
     elif args.model == 'crossvit':
         # CrossViT parameters
@@ -120,8 +120,8 @@ def get_model(args, device):
             lg_mlp_dim = 256, 
             cross_attn_depth = 2, 
             cross_attn_heads = 8,
-            dropout = 0.3, 
-            emb_dropout = 0.3 
+            dropout = 0.2, 
+            emb_dropout = 0.2 
         )
     else:
         raise ValueError(f"Unknown model: {args.model}")
@@ -131,6 +131,8 @@ def get_model(args, device):
 def train(model, train_loader, optimizer, criterion, device, epoch):
     model.train()
     total_loss = 0
+    correct = 0
+    total = 0
     pbar = tqdm(train_loader, desc=f"Epoch {epoch} [Train]", leave=False)
     
     for batch_idx, (data, target) in enumerate(pbar):
@@ -144,9 +146,14 @@ def train(model, train_loader, optimizer, criterion, device, epoch):
         total_loss += loss.item()
         pbar.set_postfix({'loss': f'{loss.item():.4f}'})
 
+        pred = output.argmax(dim=1, keepdim=True)
+        correct += pred.eq(target.view_as(pred)).sum().item()
+        total += target.size(0)
+
     avg_loss = total_loss / len(train_loader)
-    print(f"Epoch {epoch} [Train]: Average Loss: {avg_loss:.4f}")
-    return avg_loss 
+    train_accuracy = correct / total
+    print(f"Epoch {epoch} [Train]: Average Loss: {avg_loss:.4f}, Accuracy: {train_accuracy*100:.2f}%")
+    return avg_loss, train_accuracy
 
 def test(model, device, test_loader, criterion, set="Test", epoch=None):
     model.eval()
@@ -198,12 +205,14 @@ def main():
 
     train_losses = []
     val_losses = []
+    train_accuracies = []
     val_accuracies = []
 
     for epoch in range(1, args.epochs + 1):
         # 1. Training
-        avg_train_loss = train(model, trainloader, optimizer, criterion, device, epoch)
+        avg_train_loss, train_acc = train(model, trainloader, optimizer, criterion, device, epoch)
         train_losses.append(avg_train_loss)
+        train_accuracies.append(train_acc)
 
         # 2. Validation
         val_acc, avg_val_loss = test(model, device, valloader, criterion, set="Validation", epoch=epoch)
@@ -249,6 +258,7 @@ def main():
     plt.legend()
     
     plt.subplot(1, 2, 2)
+    plt.plot(epochs, train_accuracies, label='Training Accuracy')
     plt.plot(epochs, val_accuracies, label='Validation Accuracy')
     plt.title('Validation Accuracy')
     plt.xlabel('Epochs')
@@ -258,7 +268,7 @@ def main():
     plt.tight_layout()
     plot_path = f'{args.model}_training_performance_plots.png'
     plt.savefig(plot_path)
-    print(f"\n✅ Training graphs saved successfully as {plot_path}")
+    print(f"\nTraining graphs saved successfully as {plot_path}")
 
 if __name__ == '__main__':
     main()

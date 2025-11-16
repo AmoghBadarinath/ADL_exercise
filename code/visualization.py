@@ -197,9 +197,9 @@ if __name__ == "__main__":
 
     # Map the argparse choice to the user's actual uploaded filenames
     checkpoint_paths = {
-        # The training script saves ViT as 'vit_best_model.pth' and we assume CrossViT as 'cvit_best_model.pth'
-        'vit': CKPT_DIR / "vit_best_model.pth", 
-        'crossvit': CKPT_DIR / "cvit_best_model.pth" 
+        # The training script saves ViT as 'best_vit.pth' and we assume CrossViT as 'best_crossvit.pth'
+        'vit': CKPT_DIR / "best_vit.pth", 
+        'crossvit': CKPT_DIR / "best_crossvit.pth" 
     }
     
     visualize_attention(args.model, checkpoint_paths[args.model])

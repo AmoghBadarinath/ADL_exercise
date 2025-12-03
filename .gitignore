@@ -1,0 +1,109 @@
+# ===================================================================
+# PROFESSIONAL .GITIGNORE TEMPLATE
+#
+# Customize this by removing sections you don't need
+# and adding project-specific folders.
+# ===================================================================
+
+# -------------------------------------------------------------------
+# 1. Project-Specific (CUSTOMIZE THIS SECTION)
+# -------------------------------------------------------------------
+
+# Ignore the data folder as requested
+data/
+
+# Ignore other common build/dist folders
+dist/
+build/
+public/assets/
+target/
+
+# -------------------------------------------------------------------
+# 2. Critical: Secrets & Sensitive Files
+# (NEVER commit these files)
+# -------------------------------------------------------------------
+.env
+.env.local
+.env.*
+!.env.example
+secrets.yml
+credentials.json
+*.key
+*.pem
+*.p12
+
+# -------------------------------------------------------------------
+# 3. Common Dependencies
+# (These should be installed, not tracked)
+# -------------------------------------------------------------------
+
+# Node.js
+node_modules/
+
+# Python
+venv/
+.venv/
+env/
+.env/
+__pycache__/
+*.pyc
+
+# Java / Maven / Gradle
+.gradle/
+*.class
+*.jar
+*.war
+*.ear
+
+# .NET
+[Bb]in/
+[Oo]bj/
+*.user
+*.suo
+
+# -------------------------------------------------------------------
+# 4. OS & System Files (Safe to ignore)
+# -------------------------------------------------------------------
+
+# macOS
+.DS_Store
+.AppleDouble
+.Trashes
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+.*.swp
+.*.swo
+
+# -------------------------------------------------------------------
+# 5. IDE & Editor Config
+# (Allow sharing SOME files, but ignore user-specific settings)
+# -------------------------------------------------------------------
+
+# VS Code
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+
+# JetBrains (IntelliJ, PyCharm, etc.)
+.idea/
+
+# -------------------------------------------------------------------
+# 6. Logs & Temporary Files
+# -------------------------------------------------------------------
+logs/
+*.log
+npm-debug.log*
+yarn-error.log*
+*.tmp
+*.temp

@@ -32,7 +32,7 @@ credentials.json
 *.key
 *.pem
 *.p12
-.gif
+*.gif
 
 # -------------------------------------------------------------------
 # 3. Common Dependencies

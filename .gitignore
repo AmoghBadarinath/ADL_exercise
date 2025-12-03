@@ -11,7 +11,7 @@
 
 # Ignore the data folder as requested
 data/
-results
+results/
 
 # Ignore other common build/dist folders
 dist/

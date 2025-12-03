@@ -10,8 +10,8 @@
 # -------------------------------------------------------------------
 
 # Ignore the data folder as requested
-data/
-results/
+ex02_code_skeleton/data/
+
 
 # Ignore other common build/dist folders
 dist/
@@ -32,7 +32,7 @@ credentials.json
 *.key
 *.pem
 *.p12
-*.gif
+
 
 # -------------------------------------------------------------------
 # 3. Common Dependencies

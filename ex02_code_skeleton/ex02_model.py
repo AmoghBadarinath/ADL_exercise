@@ -5,7 +5,7 @@ import torch
 from torch import nn, einsum
 import torch.nn.functional as F
 from ex02_helpers import *
-
+import random
 
 # Note: This code employs large parts of the following sources:
 # Niels Rogge (nielsr) & Kashif Rasul (kashif): https://huggingface.co/blog/annotated-diffusion (last access: 23.05.2023),
@@ -214,11 +214,23 @@ class Unet(nn.Module):
         )
 
         # TODO: Implement a class embedder for the conditional part of the classifier-free guidance & define a default
+        # --- Classifier-free guidance config ---
         self.class_free_guidance = class_free_guidance
         self.num_classes = num_classes
-        if class_free_guidance:
-            # +1 for the null token
-            self.class_emb = nn.Embedding(num_classes + 1, time_dim)
+        self.p_uncond = p_uncond
+
+        if self.class_free_guidance:
+            assert num_classes is not None, "num_classes must be set when class_free_guidance=True"
+            assert p_uncond is not None, "p_uncond must be set when class_free_guidance=True"
+
+            # last index is reserved for "null" (unconditional) token
+            self.null_token = num_classes                          # int index
+            self.class_embedder = nn.Embedding(num_classes + 1, time_dim)
+        else:
+            self.null_token = None
+            self.class_embedder = None
+
+
 
         # layers
         self.downs = nn.ModuleList([])
@@ -244,9 +256,9 @@ class Unet(nn.Module):
             )
 
         mid_dim = dims[-1]
-        self.mid_block1 = block_klass(mid_dim, mid_dim, time_emb_dim=time_dim)
+        self.mid_block1 = block_klass(mid_dim, mid_dim, time_emb_dim=time_dim, classes_emb_dim=classes_dim)
         self.mid_attn = Residual(PreNorm(mid_dim, Attention(mid_dim)))
-        self.mid_block2 = block_klass(mid_dim, mid_dim, time_emb_dim=time_dim)
+        self.mid_block2 = block_klass(mid_dim, mid_dim, time_emb_dim=time_dim, classes_emb_dim=classes_dim)
 
         for ind, (dim_in, dim_out) in enumerate(reversed(in_out)):
             is_last = ind == (len(in_out) - 1)
@@ -254,8 +266,8 @@ class Unet(nn.Module):
             self.ups.append(
                 nn.ModuleList(
                     [
-                        block_klass(dim_out + dim_in, dim_out, time_emb_dim=time_dim),
-                        block_klass(dim_out + dim_in, dim_out, time_emb_dim=time_dim),
+                        block_klass(dim_out + dim_in, dim_out, time_emb_dim=time_dim, classes_emb_dim=classes_dim),
+                        block_klass(dim_out + dim_in, dim_out, time_emb_dim=time_dim, classes_emb_dim=classes_dim),
                         Residual(PreNorm(dim_out, LinearAttention(dim_out))),
                         Upsample(dim_out, dim_in)
                         if not is_last
@@ -266,10 +278,10 @@ class Unet(nn.Module):
 
         self.out_dim = default(out_dim, channels)
 
-        self.final_res_block = block_klass(dim * 2, dim, time_emb_dim=time_dim)
+        self.final_res_block = block_klass(dim * 2, dim, time_emb_dim=time_dim, classes_emb_dim=classes_dim)
         self.final_conv = nn.Conv2d(dim, self.out_dim, 1)
 
-    def forward(self, x, time, c=None):
+    def forward(self, x, time, class_label=None):
 
         x = self.init_conv(x)
         r = x.clone()
@@ -280,16 +292,26 @@ class Unet(nn.Module):
         #  - for each element in the batch, the class embedding is replaced with the null token with a certain probability during training
         #  - during testing, you need to have control over whether the conditioning is applied or not
         #  - analogously to the time embedding, the class embedding is provided in every ResNet block as additional conditioning
-        class_embedding = None 
+        c = None 
         
         # Check if CFG is enabled AND if a class index tensor was provided (c is not None)
         # Note: The logic for randomly setting c to the null token index must happen 
         #       BEFORE the call to this function (i.e., in p_losses or p_sample).
-        if self.class_free_guidance and exists(c):
-            # Embed the class indices (which may include the null token index)
-            class_embedding = self.class_emb(c)
+        if self.class_free_guidance:
+            batch = x.shape[0]
 
-        c = class_embedding
+            if class_label is not None:
+                # class_label: (B,), long
+                labels = class_label.long() 
+
+                c = self.class_embedder(labels)          # (B, time_dim)
+            else:
+                # tamamen unconditional çağrı (örneğin sampling'de y=None)
+                null_labels = torch.full(
+                    (batch,), self.null_token,
+                    device=x.device, dtype=torch.long
+                )
+                c = self.class_embedder(null_labels)
         h = []
 
         for block1, block2, attn, downsample in self.downs:

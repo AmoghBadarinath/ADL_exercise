@@ -106,8 +106,8 @@ class Diffusion:
             y_uncond = torch.full_like(y, null_token)
             noise_uncond = model(x, t, class_label=y_uncond)
             
-            # CORRECTED CFG formula
-            predicted_noise = noise_uncond + cfg_scale * (noise_cond - noise_uncond)
+            # CFG formula
+            predicted_noise = (1 + cfg_scale) * noise_cond - cfg_scale * noise_uncond
         else:
             predicted_noise = model(x, t, class_label=y)
 

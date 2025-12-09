@@ -5,7 +5,6 @@ import torch
 from torch import nn, einsum
 import torch.nn.functional as F
 from ex02_helpers import *
-import random
 
 # Note: This code employs large parts of the following sources:
 # Niels Rogge (nielsr) & Kashif Rasul (kashif): https://huggingface.co/blog/annotated-diffusion (last access: 23.05.2023),

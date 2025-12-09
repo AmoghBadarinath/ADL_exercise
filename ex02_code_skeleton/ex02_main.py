@@ -100,7 +100,6 @@ def plot_metrics(train_losses, val_losses, store_path, run_name):
 def plot_scheduler(args, store_path):
     """
     Calculates and plots the different beta schedules for visualization.
-    Ref: Exercise 2.3 [cite: 118]
     """
     # Comparison of beta schedules
     timesteps = args.timesteps
@@ -162,11 +161,19 @@ def sample_and_save_images(n_images, diffusor, model, device, store_path, cfg=Fa
         return_all_timesteps=True
     )
     
+    #  quantitatively assess the quality of your images 
+    final_samples_dir = os.path.join(store_path, "final_samples")
+    os.makedirs(final_samples_dir, exist_ok=True)
 
-    # --- A. Save Final Grid ---
-    # [cite_start]Citation: quantitatively assess the quality of your images [cite: 94]
-    final_grid = make_grid((final_images.clamp(-1,1) + 1) / 2, nrow=4)
-    save_image(final_grid, os.path.join(store_path, "final_samples.png"))
+    for img_idx in range(n_images):
+        single_img_tensor = final_images[img_idx]
+        
+        img_to_save = (single_img_tensor.clamp(-1, 1) + 1) / 2
+        
+        save_path = os.path.join(final_samples_dir, f"sample_{img_idx}.png")
+        save_image(img_to_save, save_path)
+        
+    print(f"Saved {n_images} individual images to {final_samples_dir}")
 
 
     # --- B. Save Evolution of a Single Sample (Static Grid) ---
@@ -189,7 +196,7 @@ def sample_and_save_images(n_images, diffusor, model, device, store_path, cfg=Fa
     print(f"Saved visualization artifacts to {store_path}")
 
     # --- C. Create GIF Animation ---
-    # [cite_start]Citation: Create a couple of animations [cite: 97]
+    #  Create a couple of animations
     # We will animate the first 16 images in the batch as a grid
     
     frames = []

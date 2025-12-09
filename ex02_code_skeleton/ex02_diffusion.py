@@ -34,7 +34,7 @@ def sigmoid_beta_schedule(beta_start, beta_end, timesteps):
     # TODO (2.3): Implement a sigmoidal beta schedule. Note: identify suitable limits of where you want to sample the sigmoid function.
     # Note that it saturates fairly fast for values -x << 0 << +x
     ts = torch.linspace(0, timesteps, timesteps)
-    s_limit = 6 # define a suitable limit for saturation [cite: 127]
+    s_limit = 6 # define a suitable limit for saturation
     sigmoid_input = -s_limit + (2 * ts / timesteps) * s_limit
     sigmoid = torch.sigmoid(sigmoid_input)
     
@@ -60,7 +60,7 @@ class Diffusion:
         # TODO (2.2): Compute the central values for the equation in the forward pass already here so you can quickly use them in the forward pass.
         # Note that the function torch.cumprod may be of help
 
-        # define alphas
+        # define alphas (alpha_t)
         # TODO
         self.alphas = 1. - self.betas
 
@@ -96,29 +96,44 @@ class Diffusion:
         sqrt_recip_alphas_t = extract(self.sqrt_recip_alphas, t, x.shape)
         sqrt_alphas_cumprod_t = extract(self.sqrt_alphas_cumprod, t, x.shape)
 
-        # CFG: Classifier-Free Guidance
+        # Predict noise (CFG logic)
         if cfg_scale > 0 and y is not None:
-            # Conditional prediction
             noise_cond = model(x, t, class_label=y)
-            
-            # Unconditional prediction with null token
             null_token = model.num_classes
             y_uncond = torch.full_like(y, null_token)
             noise_uncond = model(x, t, class_label=y_uncond)
-            
-            # CFG formula
             predicted_noise = (1 + cfg_scale) * noise_cond - cfg_scale * noise_uncond
-        else:
+        
+        # Conditional sampling without CFG
+        elif y is not None:
             predicted_noise = model(x, t, class_label=y)
-
-        # Predict x0 from xt and noise
+        
+        # Unconditional sampling 
+        else:
+            predicted_noise = model(x, t, class_label=None)
+        
+        # Clamp x0 for stability
+        # leave x0 alone in equation 4
         x0_pred = (x - sqrt_one_minus_alphas_cumprod_t * predicted_noise) / sqrt_alphas_cumprod_t
         x0_pred = x0_pred.clamp(-1, 1)
         
-        # Posterior mean using predicted x0
-        coef1 = extract(self.posterior_mean_coef1, t, x.shape)
-        coef2 = extract(self.posterior_mean_coef2, t, x.shape)
-        model_mean = coef1 * x0_pred + coef2 * x
+        # Recompute noise from clamped x0
+        # Clamp x0_pred to keep it in valid data range [-1,1].
+        # BUT clamping breaks consistency between x0_pred and the noise ε used in DDPM Eq.8.
+        # Since the reverse process uses ε, we must recompute ε from the clamped x0_pred.
+        # Otherwise: x0_pred and ε mismatch → incorrect model_mean → unstable sampling (white/black blowouts).
+
+        # leave noise alone in equation 4
+        predicted_noise = (x - sqrt_alphas_cumprod_t * x0_pred) / sqrt_one_minus_alphas_cumprod_t
+        
+        # PDF Equation 8: x_{t-1} = 1/√(α_t) · (x_t - β_t/√(1-ᾱ_t) · ε) + √(β̃_t)·z
+        model_mean = sqrt_recip_alphas_t * (
+            x - betas_t * predicted_noise / sqrt_one_minus_alphas_cumprod_t
+        )
+
+        # First compute the posterior mean μ_t (Eq.8). This is the most likely x_{t-1}.
+        # If t > 0, sample from the Gaussian by adding noise scaled by posterior variance.
+        # If t == 0, return μ_t directly (final clean image, no noise added).
 
         if t_index == 0:
             return model_mean
@@ -131,7 +146,7 @@ class Diffusion:
     # Algorithm 2 (including returning all images)
     @torch.no_grad()
     def sample(self, model, image_size, batch_size=16, channels=3, y=None, cfg_scale=0.0, return_all_timesteps=False):
-        # Exercise 2.2b: Full sampling loop [cite: 84]
+        # Exercise 2.2b: Full sampling loop
         # Exercise 2.4: Added y and cfg_scale args
         
         device = next(model.parameters()).device
@@ -142,14 +157,6 @@ class Diffusion:
         # If conditional and y is not provided, we can't do CFG properly unless we want random classes
         # For this exercise, we assume y is passed if cfg_scale > 0.
         intermediates = [img.cpu()] if return_all_timesteps else []
-
-        # --- Safety check for CFG ---
-        if cfg_scale > 0 and y is None:
-            raise ValueError(
-                "Classifier-Free Guidance (cfg_scale>0) requires class labels (y). "
-                "Received y=None."
-            )
-
  
         for i in tqdm(reversed(range(0, self.timesteps)), desc='sampling loop time step', total=self.timesteps):
             t = torch.full((batch_size,), i, device=device, dtype=torch.long)
@@ -166,7 +173,8 @@ class Diffusion:
 
     # forward diffusion (using the nice property)
     def q_sample(self, x_zero, t, noise=None):
-        # TODO (2.2): Implement the forward diffusion process using the beta-schedule defined in the constructor; if noise is None, you will need to create a new noise vector, otherwise use the provided one.
+        # TODO (2.2): Implement the forward diffusion process using the beta-schedule defined in the constructor; 
+        # if noise is None, you will need to create a new noise vector, otherwise use the provided one.
         if noise is None:
             noise = torch.randn_like(x_zero)
 

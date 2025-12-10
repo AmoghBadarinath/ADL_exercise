@@ -278,10 +278,8 @@ def train(model, trainloader, optimizer, diffusor, epoch, device, args):
             null_token = model.num_classes  # last index reserved for null token
             dropout_mask = torch.rand(len(classes), device=device) < args.p_uncond
             classes[dropout_mask] = null_token
-            p_uncond = args.p_uncond
         else:
             classes = labels  # Fully unconditional model
-            p_uncond = 0.0
             
         loss = diffusor.p_losses(denoise_model=model,
                                 x_zero=images, 

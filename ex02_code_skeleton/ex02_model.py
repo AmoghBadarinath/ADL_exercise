@@ -305,7 +305,7 @@ class Unet(nn.Module):
 
                 c = self.class_embedder(labels)          # (B, time_dim)
             else:
-                # tamamen unconditional çağrı (örneğin sampling'de y=None)
+                # unconditional call (e.g. y=None in sampling)
                 null_labels = torch.full(
                     (batch,), self.null_token,
                     device=x.device, dtype=torch.long

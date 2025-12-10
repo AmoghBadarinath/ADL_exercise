@@ -17,27 +17,42 @@ def cosine_beta_schedule(timesteps, s=0.008):
     cosine schedule as proposed in https://arxiv.org/abs/2102.09672
     """
     # TODO (2.3): Implement cosine beta/variance schedule as discussed in the paper mentioned above
+    # Create T+1 points for evaluating the continuous cosine schedule
     steps = timesteps + 1
     x = torch.linspace(0, timesteps, steps)
+
+    # Compute ᾱ_t = cos^2( ((t/T + s)/(1+s)) * π/2 )
     alphas_cumprod = torch.cos(((x / timesteps) + s) / (1 + s) * math.pi * 0.5) ** 2
+    # Normalize so ᾱ_0 = 1 (clean image at t=0)
     alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
 
+    # Convert ᾱ_t into per-step alphas: α_t = ᾱ_t / ᾱ_{t-1}
+    # Then betas are simply β_t = 1 - α_t
     betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
+
+    # Avoid extremely small/large betas which destabilize training
     return torch.clamp(betas, 0.0001, 0.999)
 
 
 
 def sigmoid_beta_schedule(beta_start, beta_end, timesteps):
     """
-    sigmoidal beta schedule - following a sigmoid function
+    Sigmoid-shaped beta schedule.
+    Instead of increasing noise linearly, we let β_t follow an S-shaped curve:
+    - slow increase at the beginning,
+    - rapid growth in the middle,
+    - slow saturation toward the end.
+    This creates a smooth forward diffusion process.
     """
     # TODO (2.3): Implement a sigmoidal beta schedule. Note: identify suitable limits of where you want to sample the sigmoid function.
     # Note that it saturates fairly fast for values -x << 0 << +x
+    # Sample timesteps from 0 to T (continuous domain for the sigmoid function)
     ts = torch.linspace(0, timesteps, timesteps)
     s_limit = 6 # define a suitable limit for saturation
     sigmoid_input = -s_limit + (2 * ts / timesteps) * s_limit
     sigmoid = torch.sigmoid(sigmoid_input)
     
+    # Scale sigmoid output into the desired beta range [beta_start, beta_end]
     return beta_start + sigmoid * (beta_end - beta_start)
 
 

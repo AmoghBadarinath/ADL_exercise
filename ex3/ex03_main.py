@@ -311,21 +311,41 @@ class JEM(pl.LightningModule):
         return [optimizer], [scheduler]
 
     def px_step(self, batch, ccond_sample=True):
+        """Estimate p(x) using contrastive divergence and L2 regularization."""
         # TODO (3.4): Implement p(x) step.
-        # In addition to calculating the contrastive loss, also consider using an L2 regularization loss. This allows us
-        # to constrain the Lipshitz constant by penalizes too large energies and makes sure that the energiers maintain
-        # similar magnitudes across epochs.
-        # E.g.:
-        #         reg_loss = self.hparams.alpha * (real_out ** 2 + synth_out ** 2).mean()
-        #         cdiv_loss = ...
-        #         loss = reg_loss + cdiv_loss
-        loss = None
+        real_imgs, labels = batch
+        
+        # (1) Synthesize images using MCMC (SGLD) [cite: 917]
+        # Use conditional labels if ccond_sample is enabled
+        clabel = labels if self.ccond_sample else None
+        synth_imgs = self.sampler.synthesize_samples(clabel=clabel, steps=self.hparams.steps)
+        
+        # (2) Calculate scores (negative energies) 
+        # model(x) returns f(x) = -E(x). Higher f(x) means lower energy/higher likelihood.
+        real_out = self.forward(real_imgs)
+        synth_out = self.forward(synth_imgs)
+        
+        # (3) Contrastive Divergence: E_real - E_synth [cite: 772]
+        # In terms of f(x): (-real_out) - (-synth_out) = synth_out - real_out
+        cdiv_loss = (synth_out - real_out).mean()
+        
+        # (4) L2 regularization to bound energy magnitudes [cite: 920]
+        reg_loss = self.hparams.alpha * (real_out ** 2 + synth_out ** 2).mean()
+        
+        loss = cdiv_loss + reg_loss
+        
+        # Logging for monitoring
+        self.log('train_contrastive_divergence', cdiv_loss)
+        self.log('train_reg_loss', reg_loss)
         return loss
 
     def pyx_step(self, batch):
+        """Estimate p(y|x) using standard classification cross-entropy[cite: 841]."""
         # TODO (3.4): Implement p(y|x) step.
-        # Here, we want to calculate the classification loss using the class logits infered by the neural network.
-        loss = None
+        
+        x, y = batch
+        logits = self.cnn.get_logits(x) # [cite: 922]
+        loss = torch.nn.functional.cross_entropy(logits, y)
         return loss
 
     def training_step(self, batch, batch_idx):
@@ -334,16 +354,70 @@ class JEM(pl.LightningModule):
         # Here, we specify the update equation used to tune the model parameters.
         # Ideally, we only need to call the px_step() and pyx_step() methods and combine their loss terms to build up
         # the factorized joint density loss introduced by Gratwohl et al. .
-        loss = None
+        # Joint update using factorized joint density loss [cite: 924]
+        loss_px = self.px_step(batch)
+        loss_pyx = self.pyx_step(batch)
+        
+        loss = loss_px + loss_pyx
+        
+        # Populate and log metrics
+        x, y = batch
+        logits = self.cnn.get_logits(x)
+        self.train_metrics.update(logits, y)
+        self.log_dict(self.train_metrics, on_step=False, on_epoch=True)
+        self.log('train_loss', loss)
+        
         return loss
 
     def validation_step(self, batch, batch_idx, dataset_idx=None):
         # Note: batch_idx and dataset_idx not needed (just there for PyTorch
         # Lightning)
         # TODO (3.4) 
-        pass
+        x, y = batch
+        logits = self.cnn.get_logits(x)
+        
+        # Monitor classification loss and metrics on validation set
+        loss = torch.nn.functional.cross_entropy(logits, y)
+        self.valid_metrics.update(logits, y)
+        
+        # Monitor real data energy (for tracking convergence)
+        real_out = self.forward(x)
+        self.log('val_contrastive_divergence', -real_out.mean()) 
+        self.log('val_loss', loss, prog_bar=True)
+        self.log_dict(self.valid_metrics, on_step=False, on_epoch=True)
 
+def plot_training_results(log_dir):
+    metrics_path = Path(log_dir) / "metrics.csv"
+    if not metrics_path.exists():
+        print("Metrics file not found. Skipping plotting.")
+        return
 
+    metrics = pd.read_csv(metrics_path)
+    
+    # Plot 1: Loss (Training and Validation)
+    plt.figure(figsize=(10, 5))
+    if 'train_loss' in metrics.columns:
+        sns.lineplot(data=metrics, x='epoch', y='train_loss', label='Train Loss')
+    if 'val_loss' in metrics.columns:
+        # Val loss is logged once per epoch, so we drop NaNs to align it
+        sns.lineplot(data=metrics.dropna(subset=['val_loss']), x='epoch', y='val_loss', label='Val Loss')
+    plt.title("Training and Validation Loss")
+    plt.savefig(Path(log_dir) / "loss_curve.png")
+    plt.close()
+
+    # Plot 2: Accuracy (Training and Validation)
+    # Note: Using the 'micro_Accuracy' metric defined in your JEM class
+    plt.figure(figsize=(10, 5))
+    if 'train_micro_Accuracy' in metrics.columns:
+        sns.lineplot(data=metrics, x='epoch', y='train_micro_Accuracy', label='Train Acc')
+    if 'val_micro_Accuracy' in metrics.columns:
+        sns.lineplot(data=metrics.dropna(subset=['val_micro_Accuracy']), x='epoch', y='val_micro_Accuracy', label='Val Acc')
+    plt.title("Classification Accuracy")
+    plt.savefig(Path(log_dir) / "accuracy_curve.png")
+    plt.close()
+    
+    print(f"Training graphs saved to {log_dir}")
+    
 def run_training(args) -> pl.LightningModule:
     """
     Perform EBM/JEM training using a set of hyper-parameters
@@ -368,6 +442,9 @@ def run_training(args) -> pl.LightningModule:
     cbuffer_size = args.cbuffer_size
     ccond_sample = args.ccond_sample
 
+    # Create logger
+    logger = pl.loggers.CSVLogger(save_dir=ckpt_dir, name="logs")
+
     # Create checkpoint path if it doesn't exist yet
     os.makedirs(ckpt_dir, exist_ok=True)
 
@@ -382,6 +459,7 @@ def run_training(args) -> pl.LightningModule:
                          #gpus=1 if str(device).startswith("cuda") else 0,
                          max_epochs=num_epochs,
                          gradient_clip_val=0.1,
+                         logger=logger, # Add the logger here
                          callbacks=[
                              ModelCheckpoint(save_weights_only=True, mode="min", monitor='val_contrastive_divergence',
                                              filename='val_condiv_{epoch}-{step}'),
@@ -405,6 +483,7 @@ def run_training(args) -> pl.LightningModule:
                 step_size_decay=1.0  # Multiplicative factor for SGLD step size decay)
                 )
     trainer.fit(model, train_loader, val_loader)
+    plot_training_results(logger.log_dir)
     model = JEM.load_from_checkpoint(trainer.checkpoint_callback.best_model_path)
     return model
 
@@ -528,26 +607,80 @@ def run_ood_analysis(args, ckpt_path: Union[str, Path]):
 
     # TODO (3.6): Calculate and visualize the score distributions, e.g. with a histogram. Analyze whether we can
     #  visualy tell apart the different data distributions based on their assigned score.
+    model.eval()
+    results = {}
+
+    def get_all_scores(loader, name):
+        scores = []
+        for x, _ in tqdm.tqdm(loader, desc=f"Scoring {name}", leave=False):
+            x = x.to(device)
+            # px score returns -model.cnn(x), which is the Energy E(x)
+            s = score_fn(model, x, score="px")
+            scores.append(s)
+        return torch.cat(scores).numpy()
+
+    # Get scores for In-Distribution and OOD datasets
+    results['In-Distribution'] = get_all_scores(test_loader, "ID")
+    results['OOD Type A'] = get_all_scores(ood_ta_loader, "Type A")
+    results['OOD Type B'] = get_all_scores(ood_tb_loader, "Type B")
+
+    # Generate and score Random Noise (as mentioned in the docstring)
+    # Range [-1, 1] matches the Normalize((0.5,), (0.5,)) transform
+    noise_data = torch.rand(len(datasets['test']), 1, 56, 56) * 2 - 1
+    noise_loader = data.DataLoader(noise_data, batch_size=batch_size)
+    
+    noise_scores = []
+    with torch.no_grad():
+        for x in tqdm.tqdm(noise_loader, desc="Scoring Noise", leave=False):
+            x = x.to(device)
+            noise_scores.append(score_fn(model, x, score="px"))
+    results['Random Noise'] = torch.cat(noise_scores).numpy()
+
+    # Visualization
+    plt.figure(figsize=(10, 6))
+    for name, scores in results.items():
+        sns.histplot(scores, label=name, kde=True, bins=50, element="step", alpha=0.3)
+    
+    plt.title("Energy Score $E(x)$ Distribution")
+    plt.xlabel("Energy (Lower is more likely/In-Distribution)")
+    plt.ylabel("Density")
+    plt.legend()
+    plt.show()
 
     # TODO (3.6): Solve a binary classification on the soft scores and evaluate and AUROC and/or AUPRC score for
     #  discrimination between the training samples and one of the OOD distributions.
+    id_scores = results['In-Distribution']
+    ood_scores = results['OOD Type A']
+
+    # Create ground truth labels and combined scores
+    y_true = np.concatenate([np.zeros(len(id_scores)), np.ones(len(ood_scores))])
+    y_scores = np.concatenate([id_scores, ood_scores])
+
+    # Calculate metrics
+    # Note: Higher energy = OOD, so energy acts as the "probability" of being OOD
+    auroc = roc_auc_score(y_true, y_scores)
+    auprc = average_precision_score(y_true, y_scores)
+
+    print(f"\n--- OOD Detection Performance (ID vs Type A) ---")
+    print(f"AUROC: {auroc:.4f}")
+    print(f"AUPRC: {auprc:.4f}")
 
 
 if __name__ == '__main__':
     args = parse_args()
 
     # 1) Run training
-    run_training(args)
+    # run_training(args)
 
     # # 2) Evaluate model
-    # ckpt_path: str = ""
+    ckpt_path: str = "./saved_models/logs/version_0/checkpoints/last_epoch=19-step=7060.ckpt"
 
     # # Classification performance
-    # run_evaluation(args, ckpt_path)
+    run_evaluation(args, ckpt_path)
 
     # # Image synthesis
-    # run_generation(args, ckpt_path, conditional=True)
+    run_generation(args, ckpt_path, conditional=True)
     # run_generation(args, ckpt_path, conditional=False)
 
     # # OOD Analysis
-    # run_ood_analysis(args, ckpt_path)
+    run_ood_analysis(args, ckpt_path)

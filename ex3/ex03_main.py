@@ -679,8 +679,8 @@ if __name__ == '__main__':
     run_evaluation(args, ckpt_path)
 
     # # Image synthesis
-    run_generation(args, ckpt_path, conditional=True)
-    # run_generation(args, ckpt_path, conditional=False)
+    # run_generation(args, ckpt_path, conditional=True)
+    run_generation(args, ckpt_path, conditional=False)
 
     # # OOD Analysis
     run_ood_analysis(args, ckpt_path)
